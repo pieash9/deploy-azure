@@ -1,0 +1,65 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18'
+
+    # Cache npm and Next.js build cache
+    - name: Cache npm and Next.js build cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.npm
+          ${{ github.workspace }}/.next/cache
+        key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+        restore-keys: |
+          ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Build project
+      run: npm run build
+
+    - name: Deploy to EC2
+      env:
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ${{ secrets.EC2_USER }}
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      run: |
+        echo "${SSH_PRIVATE_KEY}" > key.pem
+        chmod 400 key.pem
+
+        # Copy the built .next folder to EC2 instance
+        scp -o StrictHostKeyChecking=no -i key.pem -r .next/ ${EC2_USER}@${EC2_HOST}:/home/ubuntu/rbd-master-lms-frontend
+
+        # SSH into EC2 instance, pull latest code, install dependencies, and restart service
+        ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
+          cd /home/ubuntu/rbd-master-lms-frontend
+
+          # Pull latest changes from git
+          git pull origin main
+
+          # Ensure node_modules is up to date
+          npm install --production
+
+          # Restart the service
+          pm2 restart mastersab || pm2 start npm --name mastersab -- run start -- -p 3000
+        EOF
+
+        # Clean up
+        rm key.pem
